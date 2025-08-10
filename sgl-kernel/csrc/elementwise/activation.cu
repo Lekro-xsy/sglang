@@ -180,7 +180,7 @@ void gelu_quick(at::Tensor& out, const at::Tensor& input) {
 void swish_and_mul(at::Tensor& out, at::Tensor& input, float beta) {
   int d = input.size(-1) / 2;
   int64_t num_tokens = input.numel() / input.size(-1);
-  
+
   if (beta == 1.0f) {
     // Swish with beta=1.0 is equivalent to SiLU
     silu_and_mul(out, input);
@@ -196,7 +196,7 @@ void swish_and_mul(at::Tensor& out, at::Tensor& input, float beta) {
 }
 
 // Dispatch function for different activation types
-void flexible_act_and_mul(at::Tensor& out, at::Tensor& input, int activation_type, 
+void flexible_act_and_mul(at::Tensor& out, at::Tensor& input, int activation_type,
                           const std::vector<float>& params) {
   switch (activation_type) {
     case 0:  // SiLU
