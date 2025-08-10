@@ -141,6 +141,11 @@ void gemma_fused_add_rmsnorm(at::Tensor& input, at::Tensor& residual, at::Tensor
 void silu_and_mul(at::Tensor& out, at::Tensor& input);
 void gelu_tanh_and_mul(at::Tensor& out, at::Tensor& input);
 void gelu_and_mul(at::Tensor& out, at::Tensor& input);
+void swish_and_mul(at::Tensor& out, at::Tensor& input, float beta);
+void flexible_act_and_mul(at::Tensor& out,
+                          at::Tensor& input,
+                          int activation_type,
+                          const std::vector<float>& params);
 
 void apply_rope_pos_ids_cos_sin_cache(
     at::Tensor q,

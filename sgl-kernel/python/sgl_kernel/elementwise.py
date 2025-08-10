@@ -213,6 +213,75 @@ def gelu_and_mul(input: torch.Tensor, out: torch.Tensor = None) -> torch.Tensor:
     return out
 
 
+def swish_and_mul(input: torch.Tensor, beta: float = 1.0, out: torch.Tensor = None) -> torch.Tensor:
+    """Swish activation with gated linear unit.
+    
+    Parameters
+    ----------
+    input: torch.Tensor
+        Input tensor, shape (batch_size, hidden_size * 2).
+    beta: float
+        Swish parameter, default 1.0 (equivalent to SiLU when beta=1.0).
+    out: torch.Tensor
+        Output tensor, shape (batch_size, hidden_size).
+        
+    Returns
+    -------
+    torch.Tensor
+        Output tensor after swish_and_mul operation.
+    """
+    if input.shape[-1] * input.dtype.itemsize % 16 != 0:
+        raise ValueError("The pointers must be multiple of 16 bytes.")
+    if out is not None:
+        _check_shape(input, out)
+    else:
+        out = torch.empty(
+            input.shape[:-1] + (input.shape[-1] // 2,),
+            device=input.device,
+            dtype=input.dtype,
+        )
+    torch.ops.sgl_kernel.swish_and_mul.default(out, input, beta)
+    return out
+
+
+def flexible_act_and_mul(input: torch.Tensor, 
+                        activation_type: int, 
+                        params: list = None,
+                        out: torch.Tensor = None) -> torch.Tensor:
+    """Flexible activation with gated linear unit.
+    
+    Parameters
+    ----------
+    input: torch.Tensor
+        Input tensor, shape (batch_size, hidden_size * 2).
+    activation_type: int
+        Activation type: 0=SiLU, 1=GELU, 2=Swish, 5=GELU_TANH.
+    params: list
+        Activation parameters (e.g., [beta] for Swish).
+    out: torch.Tensor
+        Output tensor, shape (batch_size, hidden_size).
+        
+    Returns
+    -------
+    torch.Tensor
+        Output tensor after activation operation.
+    """
+    if input.shape[-1] * input.dtype.itemsize % 16 != 0:
+        raise ValueError("The pointers must be multiple of 16 bytes.")
+    if out is not None:
+        _check_shape(input, out)
+    else:
+        out = torch.empty(
+            input.shape[:-1] + (input.shape[-1] // 2,),
+            device=input.device,
+            dtype=input.dtype,
+        )
+    if params is None:
+        params = []
+    torch.ops.sgl_kernel.flexible_act_and_mul.default(out, input, activation_type, params)
+    return out
+
+
 if torch.version.hip is not None:
 
     def gelu_quick(input: torch.Tensor, out: torch.Tensor = None) -> torch.Tensor:

@@ -22,6 +22,7 @@ from sgl_kernel.attention import (
 from sgl_kernel.cutlass_moe import cutlass_w4a8_moe_mm, get_cutlass_w4a8_moe_mm_data
 from sgl_kernel.elementwise import (
     apply_rope_with_cos_sin_cache_inplace,
+    flexible_act_and_mul,
     fused_add_rmsnorm,
     gelu_and_mul,
     gelu_tanh_and_mul,
@@ -29,6 +30,7 @@ from sgl_kernel.elementwise import (
     gemma_rmsnorm,
     rmsnorm,
     silu_and_mul,
+    swish_and_mul,
 )
 from sgl_kernel.fused_moe import fused_marlin_moe
 

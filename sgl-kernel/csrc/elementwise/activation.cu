@@ -196,7 +196,9 @@ void swish_and_mul(at::Tensor& out, at::Tensor& input, float beta) {
 }
 
 // Dispatch function for different activation types
-void flexible_act_and_mul(at::Tensor& out, at::Tensor& input, int activation_type,
+void flexible_act_and_mul(at::Tensor& out,
+                          at::Tensor& input,
+                          int activation_type,
                           const std::vector<float>& params) {
   switch (activation_type) {
     case 0:  // SiLU
