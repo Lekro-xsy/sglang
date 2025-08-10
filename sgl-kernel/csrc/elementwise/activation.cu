@@ -66,6 +66,13 @@ __device__ __forceinline__ T gelu(const T& x) {
   return detail::from_f32<T>(f32_val * (0.5f * (1.0f + erf(f32_val * kAlpha))));
 }
 
+// Parameterized swish: swish(x, beta) = x * sigmoid(beta * x)
+template <typename T>
+__device__ __forceinline__ T swish(const T& x, float beta = 1.0f) {
+  float f32_val = detail::to_f32(x);
+  return detail::from_f32<T>(f32_val / (1.0f + expf(-beta * f32_val)));
+}
+
 // gelu_quick(x) = x * torch.sigmoid(1.702 * x)
 template <typename T>
 __device__ __forceinline__ T gelu_quick_act(const T& x) {
@@ -168,3 +175,48 @@ void gelu_quick(at::Tensor& out, const at::Tensor& input) {
   });
 }
 #endif
+
+// New parameterized activation functions with launch-time dispatch
+void swish_and_mul(at::Tensor& out, at::Tensor& input, float beta) {
+  int d = input.size(-1) / 2;
+  int64_t num_tokens = input.numel() / input.size(-1);
+  
+  if (beta == 1.0f) {
+    // Swish with beta=1.0 is equivalent to SiLU
+    silu_and_mul(out, input);
+    return;
+  }
+
+  // For non-unit beta, use PyTorch implementation for now
+  // TODO: Implement optimized parameterized swish kernel
+  torch::Tensor gate_up = input.view({num_tokens, d * 2});
+  torch::Tensor gate = gate_up.slice(-1, 0, d);
+  torch::Tensor up = gate_up.slice(-1, d, d * 2);
+  out.copy_(gate * torch::sigmoid(beta * gate) * up);
+}
+
+// Dispatch function for different activation types
+void flexible_act_and_mul(at::Tensor& out, at::Tensor& input, int activation_type, 
+                          const std::vector<float>& params) {
+  switch (activation_type) {
+    case 0:  // SiLU
+      silu_and_mul(out, input);
+      break;
+    case 1:  // GELU
+      gelu_and_mul(out, input);
+      break;
+    case 2:  // Swish
+      {
+        float beta = params.empty() ? 1.0f : params[0];
+        swish_and_mul(out, input, beta);
+      }
+      break;
+    case 5:  // GELU_TANH
+      gelu_tanh_and_mul(out, input);
+      break;
+    default:
+      // Fall back to SiLU for unsupported types
+      silu_and_mul(out, input);
+      break;
+  }
+}

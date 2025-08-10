@@ -3,10 +3,11 @@
 import functools
 import json
 import logging
-import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 from sglang.srt.layers.moe.cutlass_moe_params import CutlassMoEParams
 from sglang.srt.layers.utils import is_sm100_supported
@@ -48,6 +49,8 @@ def cutlass_fused_experts_fp8(
     problem_sizes1: torch.Tensor,
     problem_sizes2: torch.Tensor,
     use_fp8_blockscale: bool = True,
+    activation_type: int = 0,  # 0=silu, 1=gelu, 2=swish
+    activation_params: Optional[Dict[str, float]] = None,
 ) -> torch.Tensor:
     """Performs Fused MoE computation using CUTLASS-like kernels with FP8 weights and activations.
 
@@ -191,7 +194,31 @@ def cutlass_fused_experts_fp8(
     )
 
     intermediate = torch.empty((m * topk, n), device=device, dtype=out_dtype)
-    silu_and_mul(c1, intermediate)
+    
+    # Support different activation functions with launch-time dispatch
+    if activation_type == 0:  # SiLU
+        silu_and_mul(c1, intermediate)
+    elif activation_type == 1:  # GELU  
+        gelu_and_mul(c1, intermediate)
+    elif activation_type == 2:  # Swish with parameter
+        if activation_params and "beta" in activation_params:
+            beta = activation_params["beta"]
+            if beta == 1.0:
+                # Swish with beta=1.0 is equivalent to SiLU
+                silu_and_mul(c1, intermediate)
+            else:
+                # Custom swish implementation 
+                gate_up = c1.view(-1, n * 2)
+                gate = gate_up[..., :n]
+                up = gate_up[..., n:]
+                intermediate[...] = gate * torch.sigmoid(beta * gate) * up
+        else:
+            # Default to SiLU if no beta parameter
+            silu_and_mul(c1, intermediate)
+    else:
+        # Default to SiLU for unsupported activation types
+        logger.warning(f"Unsupported activation type {activation_type}, falling back to SiLU")
+        silu_and_mul(c1, intermediate)
 
     if is_sm100_supported():
         intemediate_q, a2_scale = sglang_per_token_group_quant_fp8(intermediate, 128)
@@ -245,6 +272,8 @@ def cutlass_moe_fp4(
     topk_ids: torch.Tensor,
     params: CutlassMoEParams,
     apply_router_weight_on_input: bool = False,
+    activation_type: int = 0,  # 0=silu, 1=gelu, 2=swish
+    activation_params: Optional[Dict[str, float]] = None,
 ):
     """
     MoE implementation for FP4 Inputs
@@ -358,7 +387,32 @@ def cutlass_moe_fp4(
     intermediate = torch.empty(
         (m_a * num_topk, w1_fp4.shape[1] // 2), device=device, dtype=out_dtype
     )
-    silu_and_mul(c1, intermediate)
+    
+    # Support different activation functions with launch-time dispatch
+    if activation_type == 0:  # SiLU
+        silu_and_mul(c1, intermediate)
+    elif activation_type == 1:  # GELU
+        gelu_and_mul(c1, intermediate)
+    elif activation_type == 2:  # Swish with parameter
+        if activation_params and "beta" in activation_params:
+            beta = activation_params["beta"]
+            if beta == 1.0:
+                # Swish with beta=1.0 is equivalent to SiLU
+                silu_and_mul(c1, intermediate)
+            else:
+                # Custom swish implementation
+                gate_up = c1.view(-1, w1_fp4.shape[1])
+                d = w1_fp4.shape[1] // 2
+                gate = gate_up[..., :d]
+                up = gate_up[..., d:]
+                intermediate[...] = gate * torch.sigmoid(beta * gate) * up
+        else:
+            # Default to SiLU if no beta parameter
+            silu_and_mul(c1, intermediate)
+    else:
+        # Default to SiLU for unsupported activation types
+        logger.warning(f"Unsupported activation type {activation_type}, falling back to SiLU")
+        silu_and_mul(c1, intermediate)
 
     int_fp4, int_blockscale = scaled_fp4_experts_quant(
         intermediate,

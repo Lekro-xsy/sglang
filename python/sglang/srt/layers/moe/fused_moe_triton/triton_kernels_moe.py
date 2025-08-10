@@ -57,6 +57,8 @@ def triton_kernel_moe_forward(
     topk_output: TopKOutput,
     inplace: bool = False,
     activation: str = "silu",
+    activation_type: Optional[int] = None,
+    activation_params: Optional[dict] = None,
     apply_router_weight_on_input: bool = False,
     use_fp8_w8a8: bool = False,
     per_channel_quant: bool = False,
@@ -81,6 +83,8 @@ def triton_kernel_moe_forward(
         scatter_idx,
         inplace=inplace,
         activation=activation,
+        activation_type=activation_type,
+        activation_params=activation_params,
         apply_router_weight_on_input=apply_router_weight_on_input,
         use_fp8_w8a8=use_fp8_w8a8,
         per_channel_quant=per_channel_quant,
@@ -104,6 +108,8 @@ def triton_kernel_fused_experts(
     scatter_indx: ScatterIndx,
     inplace: bool = False,
     activation: str = "silu",
+    activation_type: Optional[int] = None,
+    activation_params: Optional[dict] = None,
     apply_router_weight_on_input: bool = False,
     use_fp8_w8a8: bool = False,
     per_channel_quant: bool = False,
@@ -164,12 +170,44 @@ def triton_kernel_fused_experts(
         gammas=routing_data.gate_scal if apply_router_weight_on_input else None,
     )
 
-    if activation == "silu":
-        silu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
-    elif activation == "gelu":
-        gelu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+    # Use activation type for more efficient dispatch
+    if activation_type is not None:
+        from sglang.srt.layers.activation_registry import ActivationType
+        
+        if activation_type == ActivationType.SILU:
+            silu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+        elif activation_type == ActivationType.GELU:
+            gelu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+        elif activation_type == ActivationType.SWISH:
+            # For swish with beta parameter, fall back to string-based dispatch
+            # TODO: Implement optimized swish kernel with parameter support
+            if activation_params and "beta" in activation_params and activation_params["beta"] != 1.0:
+                # Custom swish implementation needed
+                gate_up = intermediate_cache1.view(-1, N)
+                d = N // 2
+                gate = gate_up[..., :d] 
+                up = gate_up[..., d:]
+                beta = activation_params["beta"]
+                intermediate_cache2[...] = (gate * torch.sigmoid(beta * gate) * up)
+            else:
+                # Beta = 1.0, equivalent to SiLU
+                silu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+        else:
+            # Fall back to string-based activation
+            if activation == "silu":
+                silu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+            elif activation == "gelu":
+                gelu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+            else:
+                raise ValueError(f"Unsupported activation type: {activation_type}")
     else:
-        raise ValueError(f"Unsupported FusedMoe activation: {activation}")
+        # Legacy string-based activation dispatch
+        if activation == "silu":
+            silu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+        elif activation == "gelu":
+            gelu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+        else:
+            raise ValueError(f"Unsupported FusedMoe activation: {activation}")
 
     intermediate_cache3 = matmul_ogs(
         intermediate_cache2,

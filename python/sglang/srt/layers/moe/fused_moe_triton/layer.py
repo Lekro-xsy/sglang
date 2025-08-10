@@ -152,9 +152,13 @@ class FusedMoE(torch.nn.Module):
         self.expert_map_cpu = None
         self.expert_map_gpu = None
 
-        # For activation
+        # For activation - support flexible activation functions
+        self.activation = activation
         self.activation_alpha = activation_alpha
         self.swiglu_limit = swiglu_limit
+        
+        # Parse activation configuration from model config
+        self._setup_activation_config()
 
         if enable_flashinfer_cutlass_moe and quant_config is None:
             logger.warning("Disable flashinfer MoE when quantization config is None.")
@@ -192,6 +196,29 @@ class FusedMoE(torch.nn.Module):
         self.use_presharded_weights = use_presharded_weights
         self.inplace = inplace
         self.no_combine = no_combine
+
+    def _setup_activation_config(self):
+        """Setup activation function configuration for MoE layer."""
+        from sglang.srt.layers.activation_registry import ActivationRegistry, ActivationType
+        
+        try:
+            # Get activation configuration from registry
+            self.activation_fn = ActivationRegistry.get_activation(
+                self.activation, {}  # No params for now, will be enhanced later
+            )
+            self.activation_type = self.activation_fn.activation_type
+            self.activation_params = self.activation_fn.get_kernel_params()
+            
+            logger.info(
+                f"MoE layer configured with activation: {self.activation}, "
+                f"type: {self.activation_type}, params: {self.activation_params}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to setup activation config: {e}. Using default silu.")
+            self.activation = "silu"
+            self.activation_fn = ActivationRegistry.get_activation("silu", {})
+            self.activation_type = ActivationType.SILU
+            self.activation_params = {}
 
         self.use_triton_kernels = (
             not _is_cpu and global_server_args_dict["enable_triton_kernel_moe"]
@@ -823,6 +850,12 @@ class FusedMoE(torch.nn.Module):
                 kwargs["activation_alpha"] = self.activation_alpha
             if self.swiglu_limit is not None:
                 kwargs["swiglu_limit"] = self.swiglu_limit
+            
+            # Add activation configuration for kernels
+            if hasattr(self, 'activation_type'):
+                kwargs["activation_type"] = self.activation_type
+            if hasattr(self, 'activation_params'):
+                kwargs["activation_params"] = self.activation_params
 
             final_hidden_states = self.quant_method.apply(
                 layer=self,

@@ -114,12 +114,16 @@ class DeepseekMoE(nn.Module):
             top_k=self.top_k,
             renormalize=config.norm_topk_prob,
         )
+        
+        # Get activation function from config (with backward compatibility)
+        hidden_act = getattr(config, 'hidden_act', 'silu')
+        
         self.experts = nn.ModuleList(
             [
                 DeepseekMLP(
                     hidden_size=config.hidden_size,
                     intermediate_size=config.moe_intermediate_size,
-                    hidden_act=config.hidden_act,
+                    hidden_act=hidden_act,
                     quant_config=quant_config,
                     reduce_results=False,
                     prefix=add_prefix(f"{idx}.experts", prefix),

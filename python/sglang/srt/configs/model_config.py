@@ -279,6 +279,9 @@ class ModelConfig:
         # Verify dual-chunk attention config
         self._verify_dual_chunk_attention_config()
 
+        # Parse activation function configuration
+        self._parse_activation_config()
+
         # Cache attributes
         self.hf_eos_token_id = self.get_hf_eos_token_id()
 
@@ -516,6 +519,57 @@ class ModelConfig:
                 self.hf_config.dual_chunk_attention_config[
                     "sparse_attention_enabled"
                 ] = True
+
+    def _parse_activation_config(self) -> None:
+        """Parse activation function configuration from model config."""
+        from sglang.srt.layers.activation_registry import (
+            parse_activation_config,
+            get_default_activation_for_model,
+            ActivationRegistry
+        )
+        
+        # Create a combined config dict with both hf_config and hf_text_config
+        combined_config = {}
+        
+        # Add hf_config attributes
+        if hasattr(self.hf_config, '__dict__'):
+            combined_config.update(self.hf_config.__dict__)
+        
+        # Add hf_text_config attributes (may override hf_config)
+        if hasattr(self.hf_text_config, '__dict__'):
+            combined_config.update(self.hf_text_config.__dict__)
+        
+        # Add model_override_args (highest priority)
+        combined_config.update(self.model_override_args)
+        
+        # Parse activation configuration
+        try:
+            activation_name, activation_params = parse_activation_config(combined_config)
+        except Exception as e:
+            logger.warning(f"Failed to parse activation config: {e}")
+            # Fall back to model-specific defaults
+            model_type = getattr(self.hf_config, 'model_type', '')
+            if hasattr(self.hf_config, 'architectures') and self.hf_config.architectures:
+                model_type = self.hf_config.architectures[0]
+            activation_name, activation_params = get_default_activation_for_model(model_type)
+        
+        # Validate activation function
+        if not ActivationRegistry.is_supported(activation_name):
+            logger.warning(
+                f"Unsupported activation function '{activation_name}' for model. "
+                f"Supported: {ActivationRegistry.list_supported()}. "
+                "Falling back to 'silu'."
+            )
+            activation_name = "silu"
+            activation_params = {}
+        
+        # Store activation configuration
+        self.hidden_act = activation_name
+        self.activation_params = activation_params
+        
+        logger.info(
+            f"Parsed activation config: {activation_name} with params {activation_params}"
+        )
 
     def get_hf_eos_token_id(self) -> Optional[Set[int]]:
         eos_ids = getattr(self.hf_config, "eos_token_id", None)
