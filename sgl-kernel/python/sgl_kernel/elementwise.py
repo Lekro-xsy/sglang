@@ -213,9 +213,11 @@ def gelu_and_mul(input: torch.Tensor, out: torch.Tensor = None) -> torch.Tensor:
     return out
 
 
-def swish_and_mul(input: torch.Tensor, beta: float = 1.0, out: torch.Tensor = None) -> torch.Tensor:
+def swish_and_mul(
+    input: torch.Tensor, beta: float = 1.0, out: torch.Tensor = None
+) -> torch.Tensor:
     """Swish activation with gated linear unit.
-    
+
     Parameters
     ----------
     input: torch.Tensor
@@ -224,7 +226,7 @@ def swish_and_mul(input: torch.Tensor, beta: float = 1.0, out: torch.Tensor = No
         Swish parameter, default 1.0 (equivalent to SiLU when beta=1.0).
     out: torch.Tensor
         Output tensor, shape (batch_size, hidden_size).
-        
+
     Returns
     -------
     torch.Tensor
@@ -244,12 +246,14 @@ def swish_and_mul(input: torch.Tensor, beta: float = 1.0, out: torch.Tensor = No
     return out
 
 
-def flexible_act_and_mul(input: torch.Tensor, 
-                        activation_type: int, 
-                        params: list = None,
-                        out: torch.Tensor = None) -> torch.Tensor:
+def flexible_act_and_mul(
+    input: torch.Tensor,
+    activation_type: int,
+    params: list = None,
+    out: torch.Tensor = None,
+) -> torch.Tensor:
     """Flexible activation with gated linear unit.
-    
+
     Parameters
     ----------
     input: torch.Tensor
@@ -260,7 +264,7 @@ def flexible_act_and_mul(input: torch.Tensor,
         Activation parameters (e.g., [beta] for Swish).
     out: torch.Tensor
         Output tensor, shape (batch_size, hidden_size).
-        
+
     Returns
     -------
     torch.Tensor
@@ -278,7 +282,9 @@ def flexible_act_and_mul(input: torch.Tensor,
         )
     if params is None:
         params = []
-    torch.ops.sgl_kernel.flexible_act_and_mul.default(out, input, activation_type, params)
+    torch.ops.sgl_kernel.flexible_act_and_mul.default(
+        out, input, activation_type, params
+    )
     return out
 
 

@@ -1,25 +1,23 @@
 """CUTLASS based Fused MoE kernels."""
 
-import functools
-import json
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Dict, Optional
 
 import torch
-
-logger = logging.getLogger(__name__)
 
 from sglang.srt.layers.moe.cutlass_moe_params import CutlassMoEParams
 from sglang.srt.layers.utils import is_sm100_supported
 from sglang.srt.utils import is_cuda
 
+logger = logging.getLogger(__name__)
+
 _is_cuda = is_cuda()
 if _is_cuda:
-    import sgl_kernel
     from sgl_kernel import (
         apply_shuffle_mul_sum,
         cutlass_fp4_group_mm,
         fp8_blockwise_scaled_grouped_mm,
+        gelu_and_mul,
         prepare_moe_input,
         scaled_fp4_experts_quant,
         shuffle_rows,
@@ -194,11 +192,11 @@ def cutlass_fused_experts_fp8(
     )
 
     intermediate = torch.empty((m * topk, n), device=device, dtype=out_dtype)
-    
+
     # Support different activation functions with launch-time dispatch
     if activation_type == 0:  # SiLU
         silu_and_mul(c1, intermediate)
-    elif activation_type == 1:  # GELU  
+    elif activation_type == 1:  # GELU
         gelu_and_mul(c1, intermediate)
     elif activation_type == 2:  # Swish with parameter
         if activation_params and "beta" in activation_params:
@@ -207,7 +205,7 @@ def cutlass_fused_experts_fp8(
                 # Swish with beta=1.0 is equivalent to SiLU
                 silu_and_mul(c1, intermediate)
             else:
-                # Custom swish implementation 
+                # Custom swish implementation
                 gate_up = c1.view(-1, n * 2)
                 gate = gate_up[..., :n]
                 up = gate_up[..., n:]
@@ -217,7 +215,9 @@ def cutlass_fused_experts_fp8(
             silu_and_mul(c1, intermediate)
     else:
         # Default to SiLU for unsupported activation types
-        logger.warning(f"Unsupported activation type {activation_type}, falling back to SiLU")
+        logger.warning(
+            f"Unsupported activation type {activation_type}, falling back to SiLU"
+        )
         silu_and_mul(c1, intermediate)
 
     if is_sm100_supported():
@@ -387,7 +387,7 @@ def cutlass_moe_fp4(
     intermediate = torch.empty(
         (m_a * num_topk, w1_fp4.shape[1] // 2), device=device, dtype=out_dtype
     )
-    
+
     # Support different activation functions with launch-time dispatch
     if activation_type == 0:  # SiLU
         silu_and_mul(c1, intermediate)
@@ -411,7 +411,9 @@ def cutlass_moe_fp4(
             silu_and_mul(c1, intermediate)
     else:
         # Default to SiLU for unsupported activation types
-        logger.warning(f"Unsupported activation type {activation_type}, falling back to SiLU")
+        logger.warning(
+            f"Unsupported activation type {activation_type}, falling back to SiLU"
+        )
         silu_and_mul(c1, intermediate)
 
     int_fp4, int_blockscale = scaled_fp4_experts_quant(
