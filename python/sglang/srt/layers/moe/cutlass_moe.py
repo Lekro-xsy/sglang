@@ -3,6 +3,7 @@
 import torch
 
 from sglang.srt.layers.moe.cutlass_moe_params import CutlassMoEParams
+from sglang.srt.layers.activation_registry import get_moe_activation_function
 from sglang.srt.utils import is_cuda
 
 _is_cuda = is_cuda()
@@ -39,6 +40,8 @@ def cutlass_fused_experts_fp8(
     expert_offsets: torch.Tensor,
     problem_sizes1: torch.Tensor,
     problem_sizes2: torch.Tensor,
+    activation: str = "silu",
+    activation_params: dict = None,
     use_fp8_blockscale: bool = True,
 ) -> torch.Tensor:
     """Performs Fused MoE computation using CUTLASS-like kernels with FP8 weights and activations.
@@ -177,7 +180,17 @@ def cutlass_fused_experts_fp8(
     )
 
     intermediate = torch.empty((m * topk, n), device=device, dtype=out_dtype)
-    silu_and_mul(c1, intermediate)
+    
+    # Apply activation function using the registry system
+    try:
+        activation_fn = get_moe_activation_function(activation, activation_params)
+        # Apply the activation function to the tensor
+        intermediate_result = activation_fn(c1)
+        # Copy result to intermediate tensor to maintain memory layout
+        intermediate.copy_(intermediate_result)
+    except ValueError:
+        # Fallback to hardcoded silu_and_mul for backward compatibility
+        silu_and_mul(c1, intermediate)
 
     intemediate_q, a2_scale = sglang_per_token_group_quant_fp8(intermediate, 128)
 
@@ -224,6 +237,8 @@ def cutlass_moe_fp4(
     topk_weights: torch.Tensor,
     topk_ids: torch.Tensor,
     params: CutlassMoEParams,
+    activation: str = "silu",
+    activation_params: dict = None,
     apply_router_weight_on_input: bool = False,
 ):
     """
@@ -338,7 +353,17 @@ def cutlass_moe_fp4(
     intermediate = torch.empty(
         (m_a * num_topk, w1_fp4.shape[1] // 2), device=device, dtype=out_dtype
     )
-    silu_and_mul(c1, intermediate)
+    
+    # Apply activation function using the registry system
+    try:
+        activation_fn = get_moe_activation_function(activation, activation_params)
+        # Apply the activation function to the tensor
+        intermediate_result = activation_fn(c1)
+        # Copy result to intermediate tensor to maintain memory layout
+        intermediate.copy_(intermediate_result)
+    except ValueError:
+        # Fallback to hardcoded silu_and_mul for backward compatibility
+        silu_and_mul(c1, intermediate)
 
     int_fp4, int_blockscale = scaled_fp4_experts_quant(
         intermediate,
