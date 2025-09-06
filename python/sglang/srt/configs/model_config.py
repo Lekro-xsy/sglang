@@ -293,6 +293,9 @@ class ModelConfig:
         # Verify dual-chunk attention config
         self._verify_dual_chunk_attention_config()
 
+        # Parse activation function configuration
+        self._parse_activation_config()
+
         # Cache attributes
         self.hf_eos_token_id = self.get_hf_eos_token_id()
 
@@ -542,6 +545,60 @@ class ModelConfig:
                 self.hf_config.dual_chunk_attention_config[
                     "sparse_attention_enabled"
                 ] = True
+
+    def _parse_activation_config(self) -> None:
+        """Parse activation function configuration from model config."""
+        # Default activation functions for different model types
+        model_type_defaults = {
+            "llama": "silu",
+            "mistral": "silu", 
+            "mixtral": "silu",
+            "qwen": "silu",
+            "qwen2": "silu",
+            "deepseek": "silu",
+            "glm": "gelu",
+            "chatglm": "gelu",
+            "gpt": "gelu",
+        }
+        
+        # Get model type for default activation
+        model_type = getattr(self.hf_config, "model_type", "").lower()
+        default_activation = "silu"  # fallback default
+        
+        for model_prefix, activation in model_type_defaults.items():
+            if model_prefix in model_type:
+                default_activation = activation
+                break
+        
+        # Parse activation function name
+        # Try different possible config keys
+        self.hidden_act = None
+        for key in ["hidden_act", "activation_function", "hidden_activation"]:
+            if hasattr(self.hf_config, key):
+                self.hidden_act = getattr(self.hf_config, key)
+                break
+        
+        if self.hidden_act is None:
+            self.hidden_act = default_activation
+            
+        # Parse activation parameters
+        self.activation_params = {}
+        if hasattr(self.hf_config, "activation_params"):
+            self.activation_params = getattr(self.hf_config, "activation_params", {})
+        elif hasattr(self.hf_config, "activation_kwargs"):
+            self.activation_params = getattr(self.hf_config, "activation_kwargs", {})
+        
+        # Handle special cases for known models
+        if self.hidden_act == "swiglu":
+            # SwiGLU is essentially silu with gating
+            self.hidden_act = "silu"
+        elif self.hidden_act == "geglu":
+            # GEGLU is essentially gelu with gating  
+            self.hidden_act = "gelu"
+        elif self.hidden_act in ["swish", "silu"]:
+            # Swish and SiLU are the same when beta=1.0
+            if "beta" not in self.activation_params:
+                self.activation_params["beta"] = 1.0
 
     def get_hf_eos_token_id(self) -> Optional[Set[int]]:
         eos_ids = getattr(self.hf_config, "eos_token_id", None)

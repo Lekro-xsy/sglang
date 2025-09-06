@@ -17,6 +17,8 @@ from triton_kernels.numerics import InFlexData
 from triton_kernels.routing import GatherIndx, RoutingData, ScatterIndx
 from triton_kernels.swiglu import swiglu_fn
 
+from sglang.srt.layers.activation_registry import get_moe_activation_function
+
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.moe_runner import MoeRunnerConfig
     from sglang.srt.layers.moe.topk import TopKOutput
@@ -84,6 +86,7 @@ def triton_kernel_moe_forward(
         scatter_idx,
         inplace=False,  # triton kernel doesn't support inplace
         activation=moe_runner_config.activation,
+        activation_params=moe_runner_config.activation_params,
         apply_router_weight_on_input=apply_router_weight_on_input,
         use_fp8_w8a8=use_fp8_w8a8,
         per_channel_quant=per_channel_quant,
@@ -107,6 +110,7 @@ def triton_kernel_fused_experts(
     scatter_indx: ScatterIndx,
     inplace: bool = False,
     activation: str = "silu",
+    activation_params: Optional[dict] = None,
     apply_router_weight_on_input: bool = False,
     use_fp8_w8a8: bool = False,
     per_channel_quant: bool = False,
@@ -167,12 +171,21 @@ def triton_kernel_fused_experts(
         gammas=routing_data.gate_scal if apply_router_weight_on_input else None,
     )
 
-    if activation == "silu":
-        silu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
-    elif activation == "gelu":
-        gelu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
-    else:
-        raise ValueError(f"Unsupported FusedMoe activation: {activation}")
+    # Apply activation function using the registry system
+    try:
+        activation_fn = get_moe_activation_function(activation, activation_params)
+        # Apply the activation function directly to reshaped tensor
+        activation_result = activation_fn(intermediate_cache1.view(-1, N))
+        # Copy result to intermediate_cache2 to maintain memory layout
+        intermediate_cache2.copy_(activation_result)
+    except ValueError:
+        # Fallback to hardcoded implementations for backward compatibility
+        if activation == "silu":
+            silu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+        elif activation == "gelu":
+            gelu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+        else:
+            raise ValueError(f"Unsupported FusedMoe activation: {activation}")
 
     intermediate_cache3 = matmul_ogs(
         intermediate_cache2,
@@ -225,6 +238,7 @@ def triton_kernel_moe_with_bias_forward(
         scatter_indx=scatter_idx,
         inplace=False,  # triton kernel doesn't support inplace
         activation=moe_runner_config.activation,
+        activation_params=moe_runner_config.activation_params,
         use_fp8_w8a8=use_fp8_w8a8,
         per_channel_quant=per_channel_quant,
         global_num_experts=global_num_experts,
@@ -252,6 +266,7 @@ def triton_kernel_fused_experts_with_bias(
     scatter_indx: ScatterIndx,
     inplace: bool = False,
     activation: str = "silu",
+    activation_params: Optional[dict] = None,
     use_fp8_w8a8: bool = False,
     per_channel_quant: bool = False,
     global_num_experts: int = -1,

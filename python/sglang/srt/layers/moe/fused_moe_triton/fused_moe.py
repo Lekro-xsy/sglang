@@ -13,6 +13,7 @@ import triton.language as tl
 
 from sglang.srt.layers.moe.moe_runner import MoeRunnerConfig
 from sglang.srt.layers.moe.topk import StandardTopKOutput
+from sglang.srt.layers.activation_registry import get_moe_activation_function
 from sglang.srt.utils import (
     cpu_has_amx_support,
     direct_register_custom_op,
@@ -75,7 +76,18 @@ def inplace_fused_experts(
     routed_scaling_factor: Optional[float] = None,
     gemm1_alpha: Optional[float] = None,
     gemm1_limit: Optional[float] = None,
+    activation_param_beta: Optional[float] = None,
+    activation_param_negative_slope: Optional[float] = None,
 ) -> None:
+    # Build activation_params dict from individual parameters
+    activation_params = {}
+    if activation_param_beta is not None:
+        activation_params["beta"] = activation_param_beta
+    if activation_param_negative_slope is not None:
+        activation_params["negative_slope"] = activation_param_negative_slope
+    if not activation_params:
+        activation_params = None
+        
     fused_experts_impl(
         hidden_states,
         w1,
@@ -86,6 +98,7 @@ def inplace_fused_experts(
         b2,
         True,
         activation,
+        activation_params,
         apply_router_weight_on_input,
         use_fp8_w8a8,
         use_int8_w8a8,
@@ -131,6 +144,8 @@ def inplace_fused_experts_fake(
     routed_scaling_factor: Optional[float] = None,
     gemm1_alpha: Optional[float] = None,
     gemm1_limit: Optional[float] = None,
+    activation_param_beta: Optional[float] = None,
+    activation_param_negative_slope: Optional[float] = None,
 ) -> None:
     pass
 
@@ -152,6 +167,7 @@ def outplace_fused_experts(
     b1: Optional[torch.Tensor] = None,
     b2: Optional[torch.Tensor] = None,
     activation: str = "silu",
+    activation_params: Optional[dict] = None,
     apply_router_weight_on_input: bool = False,
     use_fp8_w8a8: bool = False,
     use_int8_w8a8: bool = False,
@@ -180,6 +196,7 @@ def outplace_fused_experts(
         b2,
         False,
         activation,
+        activation_params,
         apply_router_weight_on_input,
         use_fp8_w8a8,
         use_int8_w8a8,
@@ -209,6 +226,7 @@ def outplace_fused_experts_fake(
     b1: Optional[torch.Tensor] = None,
     b2: Optional[torch.Tensor] = None,
     activation: str = "silu",
+    activation_params: Optional[dict] = None,
     apply_router_weight_on_input: bool = False,
     use_fp8_w8a8: bool = False,
     use_int8_w8a8: bool = False,
@@ -271,6 +289,7 @@ def fused_experts(
             b1,
             b2,
             moe_runner_config.activation,
+            moe_runner_config.activation_params,
             moe_runner_config.apply_router_weight_on_input,
             use_fp8_w8a8,
             use_int8_w8a8,
@@ -299,6 +318,7 @@ def fused_experts(
             b1,
             b2,
             moe_runner_config.activation,
+            moe_runner_config.activation_params,
             moe_runner_config.apply_router_weight_on_input,
             use_fp8_w8a8,
             use_int8_w8a8,
@@ -343,6 +363,7 @@ def fused_experts_impl(
     b2: Optional[torch.Tensor] = None,
     inplace: bool = False,
     activation: str = "silu",
+    activation_params: Optional[dict] = None,
     apply_router_weight_on_input: bool = False,
     use_fp8_w8a8: bool = False,
     use_int8_w8a8: bool = False,
@@ -488,31 +509,42 @@ def fused_experts_impl(
             per_channel_quant=per_channel_quant,
             block_shape=block_shape,
         )
-        if activation == "silu":
-            if gemm1_alpha is not None:
-                assert gemm1_limit is not None
-                intermediate_cache2 = swiglu_with_alpha_and_limit(
-                    intermediate_cache1.view(-1, N),
-                    gemm1_alpha,
-                    gemm1_limit,
-                )
-            elif _is_cuda or _is_hip:
-                silu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
-            else:
-                vllm_ops.silu_and_mul(
-                    intermediate_cache2, intermediate_cache1.view(-1, N)
-                )
-        elif activation == "gelu":
-            assert gemm1_alpha is None, "gemm1_alpha is not supported for gelu"
-            assert gemm1_limit is None, "gemm1_limit is not supported for gelu"
-            if _is_cuda or _is_hip:
-                gelu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
-            else:
-                vllm_ops.gelu_and_mul(
-                    intermediate_cache2, intermediate_cache1.view(-1, N)
-                )
+        
+        # Apply activation function using the registry system
+        if activation == "silu" and gemm1_alpha is not None:
+            # Special case: SwiGLU with alpha/limit parameters (experimental)
+            assert gemm1_limit is not None
+            intermediate_cache2 = swiglu_with_alpha_and_limit(
+                intermediate_cache1.view(-1, N),
+                gemm1_alpha,
+                gemm1_limit,
+            )
         else:
-            raise ValueError(f"Unsupported activation: {activation=}")
+            # Use the activation registry for standard activation functions
+            try:
+                activation_fn = get_moe_activation_function(activation, activation_params)
+                # Apply the activation function directly to reshaped tensor
+                activation_result = activation_fn(intermediate_cache1.view(-1, N))
+                # Copy result to intermediate_cache2 to maintain memory layout
+                intermediate_cache2.copy_(activation_result)
+            except ValueError:
+                # Fallback to hardcoded implementations for backward compatibility
+                if activation == "silu":
+                    if _is_cuda or _is_hip:
+                        silu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+                    else:
+                        vllm_ops.silu_and_mul(
+                            intermediate_cache2, intermediate_cache1.view(-1, N)
+                        )
+                elif activation == "gelu":
+                    if _is_cuda or _is_hip:
+                        gelu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+                    else:
+                        vllm_ops.gelu_and_mul(
+                            intermediate_cache2, intermediate_cache1.view(-1, N)
+                        )
+                else:
+                    raise ValueError(f"Unsupported activation: {activation=}")
 
         invoke_fused_moe_kernel(
             intermediate_cache2,
